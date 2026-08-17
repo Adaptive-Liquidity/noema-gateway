@@ -7,14 +7,25 @@ import {
   acceptInstruction,
   toCreatedPayload,
 } from "./instructions.js";
-import { getInstruction } from "./store.js";
+import { PersistError, getInstruction } from "./store.js";
 import type { GatewayRequest, GatewayResponse } from "./types.js";
 
 function unauthorized(res: GatewayResponse): void {
   sendJson(res, 401, { error: "unauthorized" });
 }
 
-export function handleV1(req: GatewayRequest, res: GatewayResponse): void {
+function persistFailure(res: GatewayResponse, error: unknown): boolean {
+  if (error instanceof PersistError) {
+    sendJson(res, error.status, { error: error.message });
+    return true;
+  }
+  return false;
+}
+
+export async function handleV1(
+  req: GatewayRequest,
+  res: GatewayResponse,
+): Promise<void> {
   if (!authorizeV1(req)) {
     unauthorized(res);
     return;
@@ -42,7 +53,7 @@ export function handleV1(req: GatewayRequest, res: GatewayResponse): void {
     }
 
     try {
-      const { record, replay } = acceptInstruction(body);
+      const { record, replay } = await acceptInstruction(body);
       sendJson(res, replay ? 200 : 201, toCreatedPayload(record));
     } catch (error) {
       if (
@@ -50,6 +61,9 @@ export function handleV1(req: GatewayRequest, res: GatewayResponse): void {
         error instanceof IdempotencyConflictError
       ) {
         sendJson(res, error.status, { error: error.message });
+        return;
+      }
+      if (persistFailure(res, error)) {
         return;
       }
       throw error;
@@ -67,18 +81,25 @@ export function handleV1(req: GatewayRequest, res: GatewayResponse): void {
       sendJson(res, 404, { error: "not found" });
       return;
     }
-    const record = getInstruction(id);
-    if (!record) {
-      sendJson(res, 404, { error: "not found" });
-      return;
+    try {
+      const record = await getInstruction(id);
+      if (!record) {
+        sendJson(res, 404, { error: "not found" });
+        return;
+      }
+      sendJson(res, 200, {
+        id: record.id,
+        status: record.status,
+        target: record.target,
+        created_at: record.created_at,
+        instruction: record.instruction,
+      });
+    } catch (error) {
+      if (persistFailure(res, error)) {
+        return;
+      }
+      throw error;
     }
-    sendJson(res, 200, {
-      id: record.id,
-      status: record.status,
-      target: record.target,
-      created_at: record.created_at,
-      instruction: record.instruction,
-    });
     return;
   }
 

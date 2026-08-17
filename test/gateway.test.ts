@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import healthHandler from "../api/health.js";
 import v1Handler from "../api/v1/[...path].js";
-import { resetStore, storeSize } from "../lib/store.js";
+import instructionByIdHandler from "../api/v1/instructions/[id].js";
+import {
+  UnconfiguredStore,
+  resetStore,
+  storeSize,
+  useStore,
+} from "../lib/store.js";
 import { handleV1 } from "../lib/v1.js";
 import { invoke } from "./harness.js";
 
@@ -31,6 +37,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   process.env.NOEMA_GATEWAY_TOKEN = FIXTURE_TOKEN;
+  process.env.NOEMA_GATEWAY_STORE = "memory";
   resetStore();
 });
 
@@ -76,15 +83,30 @@ test("api and lib relative ESM imports use explicit .js extensions", () => {
   }
 });
 
-test("Vercel function entries load and serve the existing contract", () => {
-  const health = invoke(healthHandler, {
+test("vercel.json routes two-segment instruction ids onto [id].ts", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const config = JSON.parse(
+    readFileSync(join(root, "vercel.json"), "utf8"),
+  ) as {
+    rewrites: Array<{ source: string; destination: string }>;
+  };
+  const rewrite = config.rewrites.find(
+    (entry) => entry.source === "/v1/instructions/:id",
+  );
+  assert.ok(rewrite, "missing /v1/instructions/:id rewrite");
+  assert.equal(rewrite.destination, "/api/v1/instructions/:id");
+  assert.ok(existsSync(join(root, "api/v1/instructions/[id].ts")));
+});
+
+test("Vercel function entries load and serve the existing contract", async () => {
+  const health = await invoke(healthHandler, {
     method: "GET",
     url: "/health",
   });
   assert.equal(health.status, 200);
   assert.deepEqual(health.body, { ok: true });
 
-  const bots = invoke(v1Handler, {
+  const bots = await invoke(v1Handler, {
     method: "GET",
     url: "/v1/bots",
     headers: authHeaders(),
@@ -92,8 +114,8 @@ test("Vercel function entries load and serve the existing contract", () => {
   assert.equal(bots.status, 200);
 });
 
-test("GET /health returns 200 {ok:true} without auth", () => {
-  const result = invoke(healthHandler, {
+test("GET /health returns 200 {ok:true} without auth", async () => {
+  const result = await invoke(healthHandler, {
     method: "GET",
     url: "/health",
   });
@@ -101,8 +123,8 @@ test("GET /health returns 200 {ok:true} without auth", () => {
   assert.deepEqual(result.body, { ok: true });
 });
 
-test("GET /v1/bots without token returns 401", () => {
-  const result = invoke(handleV1, {
+test("GET /v1/bots without token returns 401", async () => {
+  const result = await invoke(handleV1, {
     method: "GET",
     url: "/v1/bots",
   });
@@ -110,8 +132,8 @@ test("GET /v1/bots without token returns 401", () => {
   assert.deepEqual(result.body, { error: "unauthorized" });
 });
 
-test("GET /v1/bots with wrong token returns 401", () => {
-  const result = invoke(handleV1, {
+test("GET /v1/bots with wrong token returns 401", async () => {
+  const result = await invoke(handleV1, {
     method: "GET",
     url: "/v1/bots",
     headers: authHeaders("wrong-token-that-is-also-long-enough"),
@@ -119,8 +141,8 @@ test("GET /v1/bots with wrong token returns 401", () => {
   assert.equal(result.status, 401);
 });
 
-test("POST /v1/instructions without token returns 401", () => {
-  const result = invoke(handleV1, {
+test("POST /v1/instructions without token returns 401", async () => {
+  const result = await invoke(handleV1, {
     method: "POST",
     url: "/v1/instructions",
     body: validBody(),
@@ -128,8 +150,8 @@ test("POST /v1/instructions without token returns 401", () => {
   assert.equal(result.status, 401);
 });
 
-test("POST /v1/instructions accepts a valid body", () => {
-  const result = invoke(handleV1, {
+test("POST /v1/instructions accepts a valid body", async () => {
+  const result = await invoke(handleV1, {
     method: "POST",
     url: "/v1/instructions",
     headers: authHeaders(),
@@ -149,14 +171,14 @@ test("POST /v1/instructions accepts a valid body", () => {
   assert.equal("instruction" in body, false);
 });
 
-test("POST /v1/instructions is idempotent for the same key and body", () => {
-  const first = invoke(handleV1, {
+test("POST /v1/instructions is idempotent for the same key and body", async () => {
+  const first = await invoke(handleV1, {
     method: "POST",
     url: "/v1/instructions",
     headers: authHeaders(),
     body: validBody(),
   });
-  const second = invoke(handleV1, {
+  const second = await invoke(handleV1, {
     method: "POST",
     url: "/v1/instructions",
     headers: authHeaders(),
@@ -168,15 +190,15 @@ test("POST /v1/instructions is idempotent for the same key and body", () => {
   assert.equal(storeSize(), 1);
 });
 
-test("GET /v1/instructions/:id returns status plus instruction", () => {
-  const created = invoke(handleV1, {
+test("GET /v1/instructions/:id returns status plus instruction", async () => {
+  const created = await invoke(handleV1, {
     method: "POST",
     url: "/v1/instructions",
     headers: authHeaders(),
     body: validBody({ instruction: "status check" }),
   });
   const id = (created.body as { id: string }).id;
-  const result = invoke(handleV1, {
+  const result = await invoke(handleV1, {
     method: "GET",
     url: `/v1/instructions/${id}`,
     headers: authHeaders(),
@@ -188,8 +210,29 @@ test("GET /v1/instructions/:id returns status plus instruction", () => {
   });
 });
 
-test("GET /v1/bots lists exactly the five instruction bots", () => {
-  const result = invoke(handleV1, {
+test("GET /v1/instructions/:id reaches the dedicated [id] function", async () => {
+  const created = await invoke(v1Handler, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({ instruction: "via id function" }),
+  });
+  const id = (created.body as { id: string }).id;
+  const result = await invoke(instructionByIdHandler, {
+    method: "GET",
+    url: `/api/v1/instructions/${id}`,
+    headers: authHeaders(),
+    query: { id },
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, {
+    ...(created.body as object),
+    instruction: "via id function",
+  });
+});
+
+test("GET /v1/bots lists exactly the five instruction bots", async () => {
+  const result = await invoke(handleV1, {
     method: "GET",
     url: "/v1/bots",
     headers: authHeaders(),
@@ -206,7 +249,7 @@ test("GET /v1/bots lists exactly the five instruction bots", () => {
   });
 });
 
-test("POST /v1/instructions returns 400 on bad body", () => {
+test("POST /v1/instructions returns 400 on bad body", async () => {
   const cases: Array<{ name: string; body: unknown }> = [
     { name: "empty instruction", body: validBody({ instruction: "" }) },
     {
@@ -224,7 +267,7 @@ test("POST /v1/instructions returns 400 on bad body", () => {
   ];
 
   for (const testCase of cases) {
-    const result = invoke(handleV1, {
+    const result = await invoke(handleV1, {
       method: "POST",
       url: "/v1/instructions",
       headers: authHeaders(),
@@ -234,8 +277,8 @@ test("POST /v1/instructions returns 400 on bad body", () => {
   }
 });
 
-test("GET /v1/instructions/:id returns 404 when missing", () => {
-  const result = invoke(handleV1, {
+test("GET /v1/instructions/:id returns 404 when missing", async () => {
+  const result = await invoke(handleV1, {
     method: "GET",
     url: "/v1/instructions/instr_missing",
     headers: authHeaders(),
@@ -243,8 +286,8 @@ test("GET /v1/instructions/:id returns 404 when missing", () => {
   assert.equal(result.status, 404);
 });
 
-test("POST /v1/instructions echoes a bot UUID as the normalized target", () => {
-  const result = invoke(handleV1, {
+test("POST /v1/instructions echoes a bot UUID as the normalized target", async () => {
+  const result = await invoke(handleV1, {
     method: "POST",
     url: "/v1/instructions",
     headers: authHeaders(),
@@ -255,4 +298,41 @@ test("POST /v1/instructions echoes a bot UUID as the normalized target", () => {
   });
   assert.equal(result.status, 201);
   assert.equal((result.body as { target: string }).target, BOT_UUID);
+});
+
+test("instruction persist returns 503 when KV is not configured", async () => {
+  useStore(new UnconfiguredStore());
+  const created = await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody(),
+  });
+  assert.equal(created.status, 503);
+  assert.deepEqual(created.body, { error: "persist not configured" });
+
+  const missing = await invoke(handleV1, {
+    method: "GET",
+    url: "/v1/instructions/instr_missing",
+    headers: authHeaders(),
+  });
+  assert.equal(missing.status, 503);
+  assert.deepEqual(missing.body, { error: "persist not configured" });
+});
+
+test("health and bots still work when persist is not configured", async () => {
+  useStore(new UnconfiguredStore());
+  const health = await invoke(healthHandler, {
+    method: "GET",
+    url: "/health",
+  });
+  assert.equal(health.status, 200);
+  assert.deepEqual(health.body, { ok: true });
+
+  const bots = await invoke(handleV1, {
+    method: "GET",
+    url: "/v1/bots",
+    headers: authHeaders(),
+  });
+  assert.equal(bots.status, 200);
 });
