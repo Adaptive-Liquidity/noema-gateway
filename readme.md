@@ -96,12 +96,25 @@ Auth required. Returns the created object plus `instruction`. Missing id → `40
 
 ## Persistence
 
-Accepted instructions are stored in a **module-level `Map` for the process**.
-That is enough for status across invocations in the same Node process.
+Accepted instructions are stored in **Vercel KV / Upstash REST** so POST then
+GET works across separate serverless instances. A process-local `Map` is not
+enough on preview: another isolate will not see that row.
 
-Preview persistence is process-local until KV. A later Vercel preview cold start
-or a different isolate will not see earlier in-memory rows. This HTTP contract
-does not call Grok Bot, Slack, Notion, or wake NOEMA.
+Preview (Deploy) must set these env **names** on the preview project. Values
+stay in the project env. Do not invent or commit a URL or token.
+
+- `KV_REST_API_URL`
+- `KV_REST_API_TOKEN`
+
+(`NOEMA_GATEWAY_TOKEN` remains required for `/v1/*`.)
+
+If those KV names are missing at runtime, instruction persist returns `503`
+with a short JSON error instead of a silent `201` then `404`. `/health` and
+`GET /v1/bots` do not need the store.
+
+`npm test` uses an in-memory / injected fake backend and does not need live KV.
+
+This HTTP contract does not call Grok Bot, Slack, Notion, or wake NOEMA.
 
 ## Local
 
@@ -114,7 +127,9 @@ For a local or Vercel **preview** (not production), set `NOEMA_GATEWAY_TOKEN` in
 the environment of that process or preview project. Do not put a token in git.
 
 Handlers live under `api/` so Deploy can attach a preview later. `vercel.json`
-rewrites `/health` and `/v1/*` onto those functions.
+rewrites `/health`, `/v1/instructions/:id`, and `/v1/*` onto those functions.
+GET-by-id uses `api/v1/instructions/[id].ts` because a non-Next `[...path]`
+function only matches one extra segment.
 
 ## Status
 

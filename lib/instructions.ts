@@ -124,10 +124,10 @@ export function toCreatedPayload(record: InstructionRecord): InstructionCreated 
   };
 }
 
-export function acceptInstruction(body: unknown): {
+export async function acceptInstruction(body: unknown): Promise<{
   record: InstructionRecord;
   replay: boolean;
-} {
+}> {
   if (body == null || typeof body !== "object" || Array.isArray(body)) {
     throw new ValidationError("body must be a JSON object");
   }
@@ -146,7 +146,7 @@ export function acceptInstruction(body: unknown): {
     actor: input.actor,
   });
 
-  const existing = getInstructionByIdempotencyKey(idempotency_key);
+  const existing = await getInstructionByIdempotencyKey(idempotency_key);
   if (existing) {
     if (existing.body_fingerprint !== fingerprint) {
       throw new IdempotencyConflictError(
@@ -167,6 +167,11 @@ export function acceptInstruction(body: unknown): {
     idempotency_key,
     body_fingerprint: fingerprint,
   };
-  saveInstruction(record);
-  return { record, replay: false };
+  const saved = await saveInstruction(record);
+  if (saved.body_fingerprint !== fingerprint) {
+    throw new IdempotencyConflictError(
+      "idempotency_key was reused with a different body",
+    );
+  }
+  return { record: saved, replay: saved.id !== record.id };
 }

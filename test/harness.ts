@@ -5,8 +5,11 @@ export type InvokeResult = {
   body: unknown;
 };
 
-export function invoke(
-  handler: (req: GatewayRequest, res: GatewayResponse) => void,
+export async function invoke(
+  handler: (
+    req: GatewayRequest,
+    res: GatewayResponse,
+  ) => void | Promise<void>,
   options: {
     method: string;
     url: string;
@@ -14,7 +17,7 @@ export function invoke(
     body?: unknown;
     query?: GatewayRequest["query"];
   },
-): InvokeResult {
+): Promise<InvokeResult> {
   let status = 200;
   let payload: unknown;
 
@@ -36,7 +39,7 @@ export function invoke(
     },
   };
 
-  handler(
+  await handler(
     {
       method: options.method,
       url: options.url,
