@@ -2,9 +2,15 @@ export type NamedTarget = "noema" | "code" | "deploy" | "design" | "docs";
 
 export type InstructionSource = "agent-bridge" | "chatgpt" | "codex";
 
+export type InstructionLifecycle =
+  | "accepted"
+  | "seen"
+  | "done"
+  | "rejected";
+
 export type InstructionRecord = {
   id: string;
-  status: "accepted";
+  status: InstructionLifecycle;
   target: string;
   created_at: string;
   instruction: string;
@@ -16,7 +22,7 @@ export type InstructionRecord = {
 
 export type InstructionCreated = {
   id: string;
-  status: "accepted";
+  status: InstructionLifecycle;
   target: string;
   created_at: string;
 };
@@ -35,7 +41,7 @@ export type GatewayHeaders = Record<string, string | string[] | undefined>;
 
 export type GatewayRequest = {
   method?: string;
-  headers: GatewayHeaders;
+  headers?: GatewayHeaders;
   body?: unknown;
   query?: Record<string, string | string[] | undefined>;
   url?: string;

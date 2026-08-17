@@ -9,10 +9,18 @@ export function sendJson(
   res.status(status).json(body);
 }
 
+export function sendNoContent(res: GatewayResponse): void {
+  res.status(204);
+  res.end?.();
+}
+
 export function headerValue(
   headers: GatewayRequest["headers"],
   name: string,
 ): string | undefined {
+  if (headers == null || typeof headers !== "object") {
+    return undefined;
+  }
   const key = Object.keys(headers).find(
     (candidate) => candidate.toLowerCase() === name.toLowerCase(),
   );

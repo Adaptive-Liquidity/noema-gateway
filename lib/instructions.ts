@@ -1,13 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isNamedTarget } from "./bots.js";
 import {
+  claimInstruction,
   getInstructionByIdempotencyKey,
   saveInstruction,
+  updateInstructionStatus,
 } from "./store.js";
 import type {
   InstructionCreated,
   InstructionRecord,
   InstructionSource,
+  InstructionStatus,
 } from "./types.js";
 
 const UUID_RE =
@@ -124,6 +127,26 @@ export function toCreatedPayload(record: InstructionRecord): InstructionCreated 
   };
 }
 
+export function toStatusPayload(record: InstructionRecord): InstructionStatus {
+  return {
+    id: record.id,
+    status: record.status,
+    target: record.target,
+    created_at: record.created_at,
+    instruction: record.instruction,
+  };
+}
+
+export function toClaimedPayload(record: InstructionRecord): InstructionStatus {
+  return {
+    id: record.id,
+    target: record.target,
+    instruction: record.instruction,
+    status: record.status,
+    created_at: record.created_at,
+  };
+}
+
 export async function acceptInstruction(body: unknown): Promise<{
   record: InstructionRecord;
   replay: boolean;
@@ -174,4 +197,45 @@ export async function acceptInstruction(body: unknown): Promise<{
     );
   }
   return { record: saved, replay: saved.id !== record.id };
+}
+
+function asObject(body: unknown): Record<string, unknown> {
+  if (body == null || typeof body !== "object" || Array.isArray(body)) {
+    throw new ValidationError("body must be a JSON object");
+  }
+  return body as Record<string, unknown>;
+}
+
+export function parseClaimTarget(body: unknown): string | undefined {
+  if (body == null) {
+    return undefined;
+  }
+  const input = asObject(body);
+  if (input.target === undefined) {
+    return undefined;
+  }
+  return normalizeTarget(input.target);
+}
+
+export function parseCompletionStatus(body: unknown): "done" | "rejected" {
+  const status = asObject(body).status;
+  if (status !== "done" && status !== "rejected") {
+    throw new ValidationError("status must be done or rejected");
+  }
+  return status;
+}
+
+export async function claimNextInstruction(
+  body: unknown,
+): Promise<InstructionRecord | undefined> {
+  const target = parseClaimTarget(body);
+  return claimInstruction(target);
+}
+
+export async function completeInstruction(
+  id: string,
+  body: unknown,
+): Promise<InstructionRecord | undefined> {
+  const status = parseCompletionStatus(body);
+  return updateInstructionStatus(id, status);
 }

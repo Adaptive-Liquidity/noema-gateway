@@ -1,4 +1,6 @@
-import type { InstructionRecord } from "./types.js";
+import type { InstructionLifecycle, InstructionRecord } from "./types.js";
+
+export type CompletionStatus = Extract<InstructionLifecycle, "done" | "rejected">;
 
 export type InstructionStore = {
   getInstruction(id: string): Promise<InstructionRecord | undefined>;
@@ -6,6 +8,11 @@ export type InstructionStore = {
     key: string,
   ): Promise<InstructionRecord | undefined>;
   saveInstruction(record: InstructionRecord): Promise<InstructionRecord>;
+  claimInstruction(target?: string): Promise<InstructionRecord | undefined>;
+  updateInstructionStatus(
+    id: string,
+    status: CompletionStatus,
+  ): Promise<InstructionRecord | undefined>;
 };
 
 export type MemoryBackend = {
@@ -24,6 +31,9 @@ export class PersistError extends Error {
 
 const ID_PREFIX = "noema:instr:id:";
 const IDEM_PREFIX = "noema:instr:idem:";
+const ACCEPTED_SET = "noema:instr:accepted";
+const ACCEPTED_TARGET_PREFIX = "noema:instr:accepted:";
+const CLAIM_PREFIX = "noema:instr:claim:";
 
 export const KV_URL_ENV = "KV_REST_API_URL";
 export const KV_TOKEN_ENV = "KV_REST_API_TOKEN";
@@ -108,20 +118,69 @@ export class MemoryStore implements InstructionStore {
     this.backend.byIdempotencyKey.set(record.idempotency_key, record);
     return record;
   }
+
+  async claimInstruction(
+    target?: string,
+  ): Promise<InstructionRecord | undefined> {
+    for (const record of this.backend.byId.values()) {
+      if (record.status !== "accepted") {
+        continue;
+      }
+      if (target && record.target !== target) {
+        continue;
+      }
+      const claimed: InstructionRecord = { ...record, status: "seen" };
+      this.backend.byId.set(record.id, claimed);
+      this.backend.byIdempotencyKey.set(record.idempotency_key, claimed);
+      return claimed;
+    }
+    return undefined;
+  }
+
+  async updateInstructionStatus(
+    id: string,
+    status: CompletionStatus,
+  ): Promise<InstructionRecord | undefined> {
+    const existing = this.backend.byId.get(id);
+    if (!existing) {
+      return undefined;
+    }
+    const updated: InstructionRecord = { ...existing, status };
+    this.backend.byId.set(id, updated);
+    this.backend.byIdempotencyKey.set(existing.idempotency_key, updated);
+    return updated;
+  }
 }
 
 export class UnconfiguredStore implements InstructionStore {
-  async getInstruction(): Promise<InstructionRecord | undefined> {
+  async getInstruction(
+    _id: string,
+  ): Promise<InstructionRecord | undefined> {
     throw new PersistError("persist not configured");
   }
 
-  async getInstructionByIdempotencyKey(): Promise<
-    InstructionRecord | undefined
-  > {
+  async getInstructionByIdempotencyKey(
+    _key: string,
+  ): Promise<InstructionRecord | undefined> {
     throw new PersistError("persist not configured");
   }
 
-  async saveInstruction(): Promise<InstructionRecord> {
+  async saveInstruction(
+    _record: InstructionRecord,
+  ): Promise<InstructionRecord> {
+    throw new PersistError("persist not configured");
+  }
+
+  async claimInstruction(
+    _target?: string,
+  ): Promise<InstructionRecord | undefined> {
+    throw new PersistError("persist not configured");
+  }
+
+  async updateInstructionStatus(
+    _id: string,
+    _status: CompletionStatus,
+  ): Promise<InstructionRecord | undefined> {
     throw new PersistError("persist not configured");
   }
 }
@@ -163,7 +222,83 @@ export class KvStore implements InstructionStore {
       return existing;
     }
     await this.command(["SET", `${ID_PREFIX}${record.id}`, json]);
+    await this.command(["SADD", ACCEPTED_SET, record.id]);
+    await this.command([
+      "SADD",
+      `${ACCEPTED_TARGET_PREFIX}${record.target}`,
+      record.id,
+    ]);
     return record;
+  }
+
+  async claimInstruction(
+    target?: string,
+  ): Promise<InstructionRecord | undefined> {
+    const setKey = target
+      ? `${ACCEPTED_TARGET_PREFIX}${target}`
+      : ACCEPTED_SET;
+    for (;;) {
+      const popped = await this.command(["SPOP", setKey]);
+      if (popped == null || popped === "") {
+        return undefined;
+      }
+      const id = String(popped);
+      const record = await this.getInstruction(id);
+      if (!record || record.status !== "accepted") {
+        continue;
+      }
+      if (target && record.target !== target) {
+        continue;
+      }
+      const locked = await this.command([
+        "SET",
+        `${CLAIM_PREFIX}${record.id}`,
+        "1",
+        "NX",
+      ]);
+      if (locked == null) {
+        continue;
+      }
+      const claimed: InstructionRecord = { ...record, status: "seen" };
+      const json = JSON.stringify(claimed);
+      await this.command(["SET", `${ID_PREFIX}${record.id}`, json]);
+      await this.command([
+        "SET",
+        `${IDEM_PREFIX}${record.idempotency_key}`,
+        json,
+      ]);
+      if (target) {
+        await this.command(["SREM", ACCEPTED_SET, record.id]);
+      } else {
+        await this.command([
+          "SREM",
+          `${ACCEPTED_TARGET_PREFIX}${record.target}`,
+          record.id,
+        ]);
+      }
+      return claimed;
+    }
+  }
+
+  async updateInstructionStatus(
+    id: string,
+    status: CompletionStatus,
+  ): Promise<InstructionRecord | undefined> {
+    const existing = await this.getInstruction(id);
+    if (!existing) {
+      return undefined;
+    }
+    const updated: InstructionRecord = { ...existing, status };
+    const json = JSON.stringify(updated);
+    await this.command(["SET", `${ID_PREFIX}${id}`, json]);
+    await this.command(["SET", `${IDEM_PREFIX}${existing.idempotency_key}`, json]);
+    await this.command(["SREM", ACCEPTED_SET, id]);
+    await this.command([
+      "SREM",
+      `${ACCEPTED_TARGET_PREFIX}${existing.target}`,
+      id,
+    ]);
+    return updated;
   }
 
   private async command(cmd: unknown[]): Promise<unknown> {
@@ -245,4 +380,17 @@ export function saveInstruction(
   record: InstructionRecord,
 ): Promise<InstructionRecord> {
   return getStore().saveInstruction(record);
+}
+
+export function claimInstruction(
+  target?: string,
+): Promise<InstructionRecord | undefined> {
+  return getStore().claimInstruction(target);
+}
+
+export function updateInstructionStatus(
+  id: string,
+  status: CompletionStatus,
+): Promise<InstructionRecord | undefined> {
+  return getStore().updateInstructionStatus(id, status);
 }

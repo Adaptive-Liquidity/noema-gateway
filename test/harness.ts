@@ -5,19 +5,10 @@ export type InvokeResult = {
   body: unknown;
 };
 
-export async function invoke(
-  handler: (
-    req: GatewayRequest,
-    res: GatewayResponse,
-  ) => void | Promise<void>,
-  options: {
-    method: string;
-    url: string;
-    headers?: GatewayRequest["headers"];
-    body?: unknown;
-    query?: GatewayRequest["query"];
-  },
-): Promise<InvokeResult> {
+function createMockResponse(): {
+  res: GatewayResponse;
+  result: () => InvokeResult;
+} {
   let status = 200;
   let payload: unknown;
 
@@ -39,16 +30,46 @@ export async function invoke(
     },
   };
 
-  await handler(
-    {
-      method: options.method,
-      url: options.url,
-      headers: options.headers ?? {},
-      body: options.body,
-      query: options.query,
-    },
+  return {
     res,
-  );
+    result: () => ({ status, body: payload }),
+  };
+}
 
-  return { status, body: payload };
+export async function invokeRaw(
+  handler: (
+    req: GatewayRequest,
+    res: GatewayResponse,
+  ) => void | Promise<void>,
+  req: GatewayRequest,
+): Promise<InvokeResult> {
+  const { res, result } = createMockResponse();
+  await handler(req, res);
+  return result();
+}
+
+export async function invoke(
+  handler: (
+    req: GatewayRequest,
+    res: GatewayResponse,
+  ) => void | Promise<void>,
+  options: {
+    method: string;
+    url: string;
+    headers?: GatewayRequest["headers"];
+    body?: unknown;
+    query?: GatewayRequest["query"];
+    omitHeaders?: boolean;
+  },
+): Promise<InvokeResult> {
+  const req: GatewayRequest = {
+    method: options.method,
+    url: options.url,
+    body: options.body,
+    query: options.query,
+  };
+  if (!options.omitHeaders) {
+    req.headers = options.headers ?? {};
+  }
+  return invokeRaw(handler, req);
 }
