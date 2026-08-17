@@ -1,4 +1,4 @@
-import type { GatewayRequest, GatewayResponse } from "./types";
+import type { GatewayRequest, GatewayResponse } from "./types.js";
 
 export function sendJson(
   res: GatewayResponse,

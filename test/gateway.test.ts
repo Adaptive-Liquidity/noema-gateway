@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import healthHandler from "../api/health";
-import { resetStore, storeSize } from "../lib/store";
-import { handleV1 } from "../lib/v1";
-import { invoke } from "./harness";
+import { fileURLToPath } from "node:url";
+import healthHandler from "../api/health.js";
+import v1Handler from "../api/v1/[...path].js";
+import { resetStore, storeSize } from "../lib/store.js";
+import { handleV1 } from "../lib/v1.js";
+import { invoke } from "./harness.js";
 
 const FIXTURE_TOKEN = "test-noema-gateway-token-fixture-32chars";
 
@@ -32,6 +36,60 @@ beforeEach(() => {
 
 afterEach(() => {
   resetStore();
+});
+
+function collectTsFiles(dir: string): string[] {
+  const entries = readdirSync(dir);
+  const files: string[] = [];
+  for (const entry of entries) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      files.push(...collectTsFiles(full));
+      continue;
+    }
+    if (full.endsWith(".ts")) {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+test("api and lib relative ESM imports use explicit .js extensions", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const files = [
+    ...collectTsFiles(join(root, "api")),
+    ...collectTsFiles(join(root, "lib")),
+  ];
+  assert.ok(files.length > 0);
+  const relativeImport = /from\s+["'](\.\.?\/[^"']+)["']/g;
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    const specifiers = [...source.matchAll(relativeImport)].map((match) => match[1]);
+    assert.ok(specifiers.length > 0 || file.endsWith("types.ts"), file);
+    for (const specifier of specifiers) {
+      assert.match(
+        specifier,
+        /\.js$/,
+        `${file} imports ${specifier} without a .js extension`,
+      );
+    }
+  }
+});
+
+test("Vercel function entries load and serve the existing contract", () => {
+  const health = invoke(healthHandler, {
+    method: "GET",
+    url: "/health",
+  });
+  assert.equal(health.status, 200);
+  assert.deepEqual(health.body, { ok: true });
+
+  const bots = invoke(v1Handler, {
+    method: "GET",
+    url: "/v1/bots",
+    headers: authHeaders(),
+  });
+  assert.equal(bots.status, 200);
 });
 
 test("GET /health returns 200 {ok:true} without auth", () => {
