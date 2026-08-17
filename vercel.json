@@ -2,6 +2,10 @@
   "rewrites": [
     { "source": "/health", "destination": "/api/health" },
     {
+      "source": "/v1/instructions/claim",
+      "destination": "/api/v1/instructions/claim"
+    },
+    {
       "source": "/v1/instructions/:id",
       "destination": "/api/v1/instructions/:id"
     },

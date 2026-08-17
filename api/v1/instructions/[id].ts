@@ -17,6 +17,8 @@ export default async function handler(
   res: GatewayResponse,
 ): Promise<void> {
   const id = instructionId(req);
-  const url = id ? `/v1/instructions/${id}` : (req.url ?? "/v1/instructions");
-  await handleV1({ ...req, url }, res);
+  if (id) {
+    req.url = `/v1/instructions/${id}`;
+  }
+  await handleV1(req, res);
 }

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import healthHandler from "../api/health.js";
 import v1Handler from "../api/v1/[...path].js";
+import instructionClaimHandler from "../api/v1/instructions/claim.js";
 import instructionByIdHandler from "../api/v1/instructions/[id].js";
 import {
   UnconfiguredStore,
@@ -12,8 +13,9 @@ import {
   storeSize,
   useStore,
 } from "../lib/store.js";
+import type { GatewayRequest } from "../lib/types.js";
 import { handleV1 } from "../lib/v1.js";
-import { invoke } from "./harness.js";
+import { invoke, invokeRaw } from "./harness.js";
 
 const FIXTURE_TOKEN = "test-noema-gateway-token-fixture-32chars";
 
@@ -96,6 +98,29 @@ test("vercel.json routes two-segment instruction ids onto [id].ts", () => {
   assert.ok(rewrite, "missing /v1/instructions/:id rewrite");
   assert.equal(rewrite.destination, "/api/v1/instructions/:id");
   assert.ok(existsSync(join(root, "api/v1/instructions/[id].ts")));
+});
+
+test("vercel.json routes claim before :id onto claim.ts", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const config = JSON.parse(
+    readFileSync(join(root, "vercel.json"), "utf8"),
+  ) as {
+    rewrites: Array<{ source: string; destination: string }>;
+  };
+  const claimIndex = config.rewrites.findIndex(
+    (entry) => entry.source === "/v1/instructions/claim",
+  );
+  const idIndex = config.rewrites.findIndex(
+    (entry) => entry.source === "/v1/instructions/:id",
+  );
+  assert.ok(claimIndex >= 0, "missing /v1/instructions/claim rewrite");
+  assert.ok(idIndex >= 0, "missing /v1/instructions/:id rewrite");
+  assert.ok(claimIndex < idIndex, "claim rewrite must precede :id");
+  assert.equal(
+    config.rewrites[claimIndex]?.destination,
+    "/api/v1/instructions/claim",
+  );
+  assert.ok(existsSync(join(root, "api/v1/instructions/claim.ts")));
 });
 
 test("Vercel function entries load and serve the existing contract", async () => {
@@ -187,6 +212,27 @@ test("POST /v1/instructions is idempotent for the same key and body", async () =
   assert.equal(first.status, 201);
   assert.ok(second.status === 200 || second.status === 201);
   assert.deepEqual(second.body, first.body);
+  assert.equal(storeSize(), 1);
+});
+
+test("POST /v1/instructions returns 409 when the same key has a different body", async () => {
+  const first = await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody(),
+  });
+  const second = await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({ instruction: "a different instruction" }),
+  });
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 409);
+  assert.deepEqual(second.body, {
+    error: "idempotency_key was reused with a different body",
+  });
   assert.equal(storeSize(), 1);
 });
 
@@ -335,4 +381,241 @@ test("health and bots still work when persist is not configured", async () => {
     headers: authHeaders(),
   });
   assert.equal(bots.status, 200);
+});
+
+test("GET /v1/instructions/:id without enumerable headers returns 401 not 500", async () => {
+  const result = await invoke(instructionByIdHandler, {
+    method: "GET",
+    url: "/api/v1/instructions/instr_missing",
+    query: { id: "instr_missing" },
+    omitHeaders: true,
+  });
+  assert.equal(result.status, 401);
+  assert.deepEqual(result.body, { error: "unauthorized" });
+});
+
+test("GET /v1/instructions/:id keeps non-enumerable IncomingMessage headers", async () => {
+  const created = await invoke(v1Handler, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({ instruction: "getter headers" }),
+  });
+  const id = (created.body as { id: string }).id;
+  const req: GatewayRequest = {
+    method: "GET",
+    url: `/api/v1/instructions/${id}`,
+    query: { id },
+  };
+  Object.defineProperty(req, "headers", {
+    enumerable: false,
+    configurable: true,
+    get() {
+      return authHeaders();
+    },
+  });
+  const result = await invokeRaw(instructionByIdHandler, req);
+  assert.equal(result.status, 200);
+  assert.equal((result.body as { instruction: string }).instruction, "getter headers");
+});
+
+test("POST /v1/instructions/claim without token returns 401", async () => {
+  const result = await invoke(instructionClaimHandler, {
+    method: "POST",
+    url: "/v1/instructions/claim",
+    omitHeaders: true,
+  });
+  assert.equal(result.status, 401);
+  assert.deepEqual(result.body, { error: "unauthorized" });
+});
+
+test("POST /v1/instructions/claim returns 204 when the queue is empty", async () => {
+  const result = await invoke(instructionClaimHandler, {
+    method: "POST",
+    url: "/v1/instructions/claim",
+    headers: authHeaders(),
+  });
+  assert.equal(result.status, 204);
+  assert.equal(result.body, undefined);
+});
+
+test("POST /v1/instructions/claim is atomic and does not double-claim", async () => {
+  const created = await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({ instruction: "claim me" }),
+  });
+  assert.equal(created.status, 201);
+  const id = (created.body as { id: string }).id;
+
+  const first = await invoke(instructionClaimHandler, {
+    method: "POST",
+    url: "/v1/instructions/claim",
+    headers: authHeaders(),
+  });
+  const second = await invoke(instructionClaimHandler, {
+    method: "POST",
+    url: "/v1/instructions/claim",
+    headers: authHeaders(),
+  });
+
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.body, {
+    id,
+    target: "noema",
+    instruction: "claim me",
+    status: "seen",
+    created_at: (created.body as { created_at: string }).created_at,
+  });
+  assert.equal(second.status, 204);
+  assert.equal(second.body, undefined);
+
+  const fetched = await invoke(handleV1, {
+    method: "GET",
+    url: `/v1/instructions/${id}`,
+    headers: authHeaders(),
+  });
+  assert.equal(fetched.status, 200);
+  assert.equal((fetched.body as { status: string }).status, "seen");
+});
+
+test("POST /v1/instructions/claim can filter by target", async () => {
+  await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({
+      target: "docs",
+      instruction: "docs only",
+      idempotency_key: "44444444-4444-4444-8444-444444444444",
+    }),
+  });
+  const empty = await invoke(instructionClaimHandler, {
+    method: "POST",
+    url: "/v1/instructions/claim",
+    headers: authHeaders(),
+    body: { target: "noema" },
+  });
+  assert.equal(empty.status, 204);
+
+  const claimed = await invoke(instructionClaimHandler, {
+    method: "POST",
+    url: "/v1/instructions/claim",
+    headers: authHeaders(),
+    body: { target: "docs" },
+  });
+  assert.equal(claimed.status, 200);
+  assert.equal((claimed.body as { target: string }).target, "docs");
+  assert.equal((claimed.body as { status: string }).status, "seen");
+});
+
+test("PATCH /v1/instructions/:id without token returns 401", async () => {
+  const result = await invoke(instructionByIdHandler, {
+    method: "PATCH",
+    url: "/api/v1/instructions/instr_missing",
+    query: { id: "instr_missing" },
+    body: { status: "done" },
+    omitHeaders: true,
+  });
+  assert.equal(result.status, 401);
+  assert.deepEqual(result.body, { error: "unauthorized" });
+});
+
+test("PATCH /v1/instructions/:id sets done and rejected", async () => {
+  const doneCreated = await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({ instruction: "mark done" }),
+  });
+  const doneId = (doneCreated.body as { id: string }).id;
+  const done = await invoke(instructionByIdHandler, {
+    method: "PATCH",
+    url: `/api/v1/instructions/${doneId}`,
+    headers: authHeaders(),
+    query: { id: doneId },
+    body: { status: "done" },
+  });
+  assert.equal(done.status, 200);
+  assert.equal((done.body as { status: string }).status, "done");
+  assert.equal((done.body as { instruction: string }).instruction, "mark done");
+
+  const rejectedCreated = await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({
+      instruction: "mark rejected",
+      idempotency_key: "55555555-5555-4555-8555-555555555555",
+    }),
+  });
+  const rejectedId = (rejectedCreated.body as { id: string }).id;
+  const rejected = await invoke(instructionByIdHandler, {
+    method: "PATCH",
+    url: `/api/v1/instructions/${rejectedId}`,
+    headers: authHeaders(),
+    query: { id: rejectedId },
+    body: { status: "rejected" },
+  });
+  assert.equal(rejected.status, 200);
+  assert.equal((rejected.body as { status: string }).status, "rejected");
+
+  const fetched = await invoke(handleV1, {
+    method: "GET",
+    url: `/v1/instructions/${doneId}`,
+    headers: authHeaders(),
+  });
+  assert.equal(fetched.status, 200);
+  assert.equal((fetched.body as { status: string }).status, "done");
+});
+
+test("PATCH /v1/instructions/:id returns 400 for an invalid status", async () => {
+  const created = await invoke(handleV1, {
+    method: "POST",
+    url: "/v1/instructions",
+    headers: authHeaders(),
+    body: validBody({ instruction: "bad patch" }),
+  });
+  const id = (created.body as { id: string }).id;
+  const result = await invoke(instructionByIdHandler, {
+    method: "PATCH",
+    url: `/api/v1/instructions/${id}`,
+    headers: authHeaders(),
+    query: { id },
+    body: { status: "seen" },
+  });
+  assert.equal(result.status, 400);
+});
+
+test("PATCH /v1/instructions/:id returns 404 when missing", async () => {
+  const result = await invoke(instructionByIdHandler, {
+    method: "PATCH",
+    url: "/api/v1/instructions/instr_missing",
+    headers: authHeaders(),
+    query: { id: "instr_missing" },
+    body: { status: "done" },
+  });
+  assert.equal(result.status, 404);
+});
+
+test("claim and PATCH persist return 503 when KV is not configured", async () => {
+  useStore(new UnconfiguredStore());
+  const claim = await invoke(instructionClaimHandler, {
+    method: "POST",
+    url: "/v1/instructions/claim",
+    headers: authHeaders(),
+  });
+  assert.equal(claim.status, 503);
+  assert.deepEqual(claim.body, { error: "persist not configured" });
+
+  const patched = await invoke(instructionByIdHandler, {
+    method: "PATCH",
+    url: "/api/v1/instructions/instr_missing",
+    headers: authHeaders(),
+    query: { id: "instr_missing" },
+    body: { status: "done" },
+  });
+  assert.equal(patched.status, 503);
+  assert.deepEqual(patched.body, { error: "persist not configured" });
 });

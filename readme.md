@@ -9,7 +9,9 @@ Do not merge this as production. Do not deploy with `--prod`.
 
 - `Authorization: Bearer <NOEMA_GATEWAY_TOKEN>` on all `/v1/*`
 - `POST /v1/instructions`
+- `POST /v1/instructions/claim`
 - `GET /v1/instructions/:id`
+- `PATCH /v1/instructions/:id`
 - `GET /v1/bots`
 - `GET /health` (no auth)
 
@@ -88,11 +90,53 @@ Auth required. Body:
 ```
 
 The same `idempotency_key` plus the same body returns the original `201`/`200`
-payload and does not create a duplicate.
+payload and does not create a duplicate. The same key with a different body
+returns `409`.
+
+### `POST /v1/instructions/claim`
+
+Auth required. Atomically picks one instruction with status `accepted` and sets
+it to `seen`. A second claim does not return the same accepted row.
+
+Body is optional:
+
+```json
+{ "target": "noema" }
+```
+
+If `target` is present, only that named or UUID target is claimed.
+
+- `200` when a row is claimed:
+
+```json
+{
+  "id": "instr_...",
+  "target": "noema",
+  "instruction": "...",
+  "status": "seen",
+  "created_at": "2026-08-17T00:00:00.000Z"
+}
+```
+
+- `204` when none are available
+
+NOEMA polls `POST /v1/instructions/claim` after HTTP is green.
 
 ### `GET /v1/instructions/:id`
 
-Auth required. Returns the created object plus `instruction`. Missing id → `404`.
+Auth required. Returns the created object plus `instruction` and the current
+status (`accepted` | `seen` | `done` | `rejected`). Missing id → `404`.
+
+### `PATCH /v1/instructions/:id`
+
+Auth required. Consumer completion only:
+
+```json
+{ "status": "done" }
+```
+
+or `{ "status": "rejected" }`. Invalid status → `400`. Missing id → `404`.
+`200` returns the same shape as GET.
 
 ## Persistence
 
@@ -127,9 +171,11 @@ For a local or Vercel **preview** (not production), set `NOEMA_GATEWAY_TOKEN` in
 the environment of that process or preview project. Do not put a token in git.
 
 Handlers live under `api/` so Deploy can attach a preview later. `vercel.json`
-rewrites `/health`, `/v1/instructions/:id`, and `/v1/*` onto those functions.
-GET-by-id uses `api/v1/instructions/[id].ts` because a non-Next `[...path]`
-function only matches one extra segment.
+rewrites `/health`, `/v1/instructions/claim` (before `:id`),
+`/v1/instructions/:id`, and `/v1/*` onto those functions.
+GET/PATCH-by-id uses `api/v1/instructions/[id].ts` because a non-Next
+`[...path]` function only matches one extra segment. Claim uses
+`api/v1/instructions/claim.ts` so `claim` is not treated as an id.
 
 ## Status
 
