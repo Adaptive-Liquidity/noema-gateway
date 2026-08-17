@@ -1,14 +1,14 @@
-import { authorizeV1 } from "./auth";
-import { listBots } from "./bots";
-import { parseJsonBody, resolvePathSegments, sendJson } from "./http";
+import { authorizeV1 } from "./auth.js";
+import { listBots } from "./bots.js";
+import { parseJsonBody, resolvePathSegments, sendJson } from "./http.js";
 import {
   IdempotencyConflictError,
   ValidationError,
   acceptInstruction,
   toCreatedPayload,
-} from "./instructions";
-import { getInstruction } from "./store";
-import type { GatewayRequest, GatewayResponse } from "./types";
+} from "./instructions.js";
+import { getInstruction } from "./store.js";
+import type { GatewayRequest, GatewayResponse } from "./types.js";
 
 function unauthorized(res: GatewayResponse): void {
   sendJson(res, 401, { error: "unauthorized" });

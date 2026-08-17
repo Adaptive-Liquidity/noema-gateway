@@ -1,4 +1,4 @@
-import type { InstructionRecord } from "./types";
+import type { InstructionRecord } from "./types.js";
 
 const instructionsById = new Map<string, InstructionRecord>();
 const instructionsByIdempotencyKey = new Map<string, InstructionRecord>();

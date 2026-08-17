@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { isNamedTarget } from "./bots";
+import { isNamedTarget } from "./bots.js";
 import {
   getInstructionByIdempotencyKey,
   saveInstruction,
-} from "./store";
+} from "./store.js";
 import type {
   InstructionCreated,
   InstructionRecord,
   InstructionSource,
-} from "./types";
+} from "./types.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

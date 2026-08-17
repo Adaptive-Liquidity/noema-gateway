@@ -1,4 +1,4 @@
-import type { GatewayRequest, GatewayResponse } from "../lib/types";
+import type { GatewayRequest, GatewayResponse } from "../lib/types.js";
 
 export type InvokeResult = {
   status: number;

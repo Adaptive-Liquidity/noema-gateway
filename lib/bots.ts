@@ -1,4 +1,4 @@
-import type { Bot, NamedTarget } from "./types";
+import type { Bot, NamedTarget } from "./types.js";
 
 export const NAMED_TARGETS: readonly NamedTarget[] = [
   "noema",

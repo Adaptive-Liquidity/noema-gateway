@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
-import type { GatewayRequest } from "./types";
-import { headerValue } from "./http";
+import type { GatewayRequest } from "./types.js";
+import { headerValue } from "./http.js";
 
 export function configuredGatewayToken(): string | undefined {
   const token = process.env.NOEMA_GATEWAY_TOKEN;
